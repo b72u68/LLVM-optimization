@@ -1,0 +1,7 @@
+main
+*~ *.o *.cmo *.cmi *.cmx
+*/*~
+*/*.cmo
+*/*.cmi
+*/*.cmx
+*/*.o
