@@ -3,6 +3,8 @@
 (* My Dinh *)
 
 open LLVM.Ast
+open LLVM.Utils
+
 module VMap = LLVM.Typecheck.LLVarmap
 
 module ExpDataflow = Dataflow.Make
@@ -151,44 +153,221 @@ let noop_inst = ISet (new_temp(), TInteger 32, Const 0)
  *    | _ -> ExpSet.empty
  *)
 
+let string_of_value = function
+    | Var (Local v) -> "%" ^ v
+    | Var (Global v) -> "@" ^ v
+    | Const n -> string_of_int n
+
+
+(* Constant/Var Propagation *)
 module VarMap = Map.Make(String)
 
-let rec propagation (m: value VarMap.t) (il: inst list) : inst list =
-    let find_replace_value (m: value VarMap.t) (vv: value) : value =
-        try
-            match vv with
-            | Var (Local v) -> VarMap.find v m
-            | _ -> vv
-         with Not_found -> vv
+let find_replace_value (m: value VarMap.t) (vv: value) : value =
+    try
+        match vv with
+        | Var (Local v) -> VarMap.find v m
+        | _ -> vv
+     with Not_found -> vv
+
+let propagation (il: inst list) : inst list =
+    let rec propagation_rec (m: value VarMap.t) (il: inst list) =
+        match il with
+        | [] -> []
+        | i::t ->
+                match i with
+                | ICast (Local d, cty, ty1, vv, ty2) ->
+                        let vv_rep = find_replace_value m vv in
+                        (ICast (Local d, cty, ty1, vv_rep, ty2))::(propagation_rec (VarMap.add d vv_rep m) t)
+                | ISet (Local d, ty, vv) ->
+                        let vv_rep = find_replace_value m vv in
+                        (ISet (Local d, ty, vv_rep))::(propagation_rec (VarMap.add d vv_rep m) t)
+                | IBinop (d, op, ty, vv1, vv2) ->
+                        let vv1_rep = find_replace_value m vv1 in
+                        let vv2_rep = find_replace_value m vv2 in
+                        (IBinop (d, op, ty, vv1_rep, vv2_rep))::(propagation_rec m t)
+                | ICmp (d, op, ty, vv1, vv2) ->
+                        let vv1_rep = find_replace_value m vv1 in
+                        let vv2_rep = find_replace_value m vv2 in
+                        (ICmp (d, op, ty, vv1_rep, vv2_rep))::(propagation_rec m t)
+                | ICondBr (vv, l1, l2) ->
+                        let s_rep = find_replace_value m vv in
+                        (ICondBr (s_rep, l1, l2))::(propagation_rec m t)
+                | ICall (d, ty, fptr, arglist) ->
+                        let arglist_rep = List.map (fun (ty, vv) -> (ty, find_replace_value m vv)) arglist in
+                        (ICall (d, ty, fptr, arglist_rep))::(propagation_rec m t)
+                | IRet (Some (ty, vv)) ->
+                        let vv_rep = find_replace_value m vv in
+                        (IRet (Some (ty, vv_rep)))::(propagation_rec m t)
+                | _ -> i::(propagation_rec m t)
     in
+    propagation_rec (VarMap.empty) il
+
+
+(* Constant Folding *)
+let bool_of_int (n: int) : bool = n <> 0
+
+let int_of_bool (b: bool) : int = if b then 1 else 0
+
+let rec constant_folding (il: inst list) : inst list =
+    match il with
+    | [] -> []
+    | i::t ->
+            let i_rep =
+                (match i with
+                | IBinop (d, op, ty, Const n1, Const n2) ->
+                        (match op with
+                        | BAdd -> ISet (d, ty, Const (n1 + n2))
+                        | BSub -> ISet (d, ty, Const (n1 - n2))
+                        | BMul -> ISet (d, ty, Const (n1 * n2))
+                        | BDiv -> ISet (d, ty, Const (n1 / n2))
+                        | BAnd ->
+                                let b1 = bool_of_int n1 in
+                                let b2 = bool_of_int n2 in
+                                ISet (d, ty, Const (int_of_bool (b1 && b2)))
+                        | BOr ->
+                                let b1 = bool_of_int n1 in
+                                let b2 = bool_of_int n2 in
+                                ISet (d, ty, Const (int_of_bool (b1 || b2)))
+                        | BXor ->
+                                let b1 = bool_of_int n1 in
+                                let b2 = bool_of_int n2 in
+                                ISet (d, ty, Const (int_of_bool (b1 <> b2))))
+                | ICmp (d, op, ty, Const n1, Const n2) ->
+                        (match op with
+                        | CEq -> ISet (d, ty, Const (int_of_bool (n1 = n2)))
+                        | CNe -> ISet (d, ty, Const (int_of_bool (n1 <> n2)))
+                        | CSGt -> ISet (d, ty, Const (int_of_bool (n1 > n2)))
+                        | CSGe -> ISet (d, ty, Const (int_of_bool (n1 >= n2)))
+                        | CSLt -> ISet (d, ty, Const (int_of_bool (n1 < n2)))
+                        | CSLe -> ISet (d, ty, Const (int_of_bool (n1 <= n2))))
+                | ICondBr (Const n, l1, l2) -> if (bool_of_int n) then IBr l1 else IBr l2
+                | _ -> i)
+            in i_rep::(constant_folding t)
+
+
+(* Dead Code Elimination *)
+let elim_dead (il: inst list) : inst list =
+    let uses = List.fold_left (fun acc i -> acc @ (use_inst i)) [] il in
+    let rec elim_rec (il: inst list) =
+        match il with
+        | [] -> []
+        | i::t ->
+                let defs = def_inst i in
+                if List.length defs = 0 then i::(elim_rec t)
+                else
+                    let d = List.nth defs 0 in
+                    if List.mem d uses then i::(elim_rec t)
+                    else elim_rec t
+    in
+    elim_rec il
+
+
+(* Unreachable Code Elimination *)
+let rec use_labels (il: inst list) : label list  =
     match il with
     | [] -> []
     | i::t ->
             match i with
-            | ICast (Local d, cty, ty1, vv, ty2) ->
-                    let vv_rep = find_replace_value m vv in
-                    (ICast (Local d, cty, ty1, vv_rep, ty2))::(propagation (VarMap.add d vv_rep m) t)
-            | ISet (Local d, ty, vv) ->
-                    let vv_rep = find_replace_value m vv in
-                    (ISet (Local d, ty, vv_rep))::(propagation (VarMap.add d vv_rep m) t)
-            | IBinop (d, op, ty, vv1, vv2) ->
-                    let vv1_rep = find_replace_value m vv1 in
-                    let vv2_rep = find_replace_value m vv2 in
-                    (IBinop (d, op, ty, vv1_rep, vv2_rep))::(propagation m t)
-            | ICmp (d, op, ty, vv1, vv2) ->
-                    let vv1_rep = find_replace_value m vv1 in
-                    let vv2_rep = find_replace_value m vv2 in
-                    (ICmp (d, op, ty, vv1_rep, vv2_rep))::(propagation m t)
-            | ICondBr (vv, l1, l2) ->
-                    let s_rep = find_replace_value m vv in
-                    (ICondBr (s_rep, l1, l2))::(propagation m t)
-            | ICall (d, ty, fptr, arglist) ->
-                    let arglist_rep = List.map (fun (ty, vv) -> (ty, find_replace_value m vv)) arglist in
-                    (ICall (d, ty, fptr, arglist_rep))::(propagation m t)
-            | _ -> i::(propagation m t)
+            | IBr l -> [l] @ (use_labels t)
+            | ICondBr (_, l1, l2) -> [l1; l2] @ (use_labels t)
+            | _ -> use_labels t
+
+let rec remove_label_from_phi (il: inst list) (lbl: label) : inst list =
+    match il with
+    | [] -> []
+    | i::t ->
+            match i with
+            | IPhi (d, ty, mergelist) ->
+                    let mergelist = List.remove_assoc lbl mergelist in
+                    if List.length mergelist = 1 then
+                        let (l, vv) = List.nth mergelist 0 in
+                        (ISet (d, ty, vv))::(remove_label_from_phi t lbl)
+                    else
+                        (IPhi (d, ty, mergelist))::(remove_label_from_phi t lbl)
+            | _ -> i::(remove_label_from_phi t lbl)
+
+let rec remove_label_block (il: inst list) : inst list =
+    match il with
+    | [] -> []
+    | i::t ->
+            match i with
+            | IBr _ | ICondBr _ | IRet _ -> t
+            | _ -> remove_label_block t
+
+let elim_unreachable (il: inst list) : inst list =
+    let use = use_labels il in
+    let rec elim_rec (il: inst list ) =
+        match il with
+        | [] -> []
+        | i::t ->
+                match i with
+                | ILabel l ->
+                        if not (List.mem l use) then
+                            let t = remove_label_block t in
+                            let t = remove_label_from_phi t l in
+                            elim_rec t
+                        else i::(elim_rec t)
+                | _ -> i::(elim_rec t)
+    in
+    (* Skip the label of function body *)
+    match il with
+    | [] -> []
+    | i::t -> i::(elim_rec t)
+
+(* Merge code block *)
+let rec label_block (il: inst list) (lbl: label) : inst list =
+    let rec collect (il: inst list) =
+        match il with
+        | [] -> []
+        | i::t ->
+                match i with
+                | IBr _ | ICondBr _ | IRet _ -> [i]
+                | _ -> i::(collect t)
+    in
+    match il with
+    | [] -> []
+    | (ILabel l)::t ->
+            if l <> lbl then label_block t lbl
+            else collect t
+    | _::t -> label_block t lbl
+
+let merge_blocks (il: inst list) : inst list =
+    let use = use_labels il in
+    let rec merge_rec (il: inst list) =
+        match il with
+        | [] -> []
+        | i::t ->
+                match i with
+                | IBr l ->
+                        let count_uses = List.fold_left (fun acc lbl -> if l = lbl then acc + 1 else acc) 0 use in
+                        if count_uses = 1 then
+                            (* get code block of the label and move it to the position of IBr *)
+                            let block = label_block il l in
+                            block @ (merge_rec t)
+                        else i::(merge_rec t)
+                | _ -> i::(merge_rec t)
+    in
+    (* Skip the label of function body *)
+    match il with
+    | [] -> []
+    | i::t -> i::(merge_rec t)
 
 
-let opt_body ts fname body = propagation (VarMap.empty) body
+(* Optimization *)
+let opt_body ts fname body =
+    let rec opt_body_rec body =
+        let old_body = body in
+        let body =
+            body
+            |> propagation
+            |> constant_folding
+            |> elim_dead
+            |> elim_unreachable
+            |> merge_blocks
+        in
+        if body <> old_body then opt_body_rec body
+        else body
+    in opt_body_rec body
 
 let opt_func ts f =
   make_func

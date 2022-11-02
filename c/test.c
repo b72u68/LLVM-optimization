@@ -1,6 +1,8 @@
+// Result: 1230
 //int gl = 0;
 
-struct blah {int a;
+struct blah {
+  int a;
   int b;
   int c;
 };

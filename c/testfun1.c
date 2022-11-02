@@ -1,3 +1,4 @@
+// Result: 3
 int foo (int i) {
   return i + 1;
 }

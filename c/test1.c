@@ -1,3 +1,4 @@
+// Result: 35960
 int foo (int a) {
   return a + 1;
 }

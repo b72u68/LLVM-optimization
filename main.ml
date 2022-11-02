@@ -51,7 +51,7 @@ let verb s =
 let unimp s =
   Printf.fprintf stderr "main: %s not implemented" s;
                  exit 1
-  
+
 (** Input Validation/Normalization **)
 let () = if !input_file = "" then cmd_error "No input file specified"
 
@@ -208,20 +208,20 @@ let ts =
       LLVM.Print.print_inst i;
     Format.print_newline ();
     exit 1
-       
+
 let (llvm_ssa, tds) =
   if !nossa then (llvmprog, tds)
   else
     (verb "Start SSA Conversion";
      LLVM.SSA.convert_prog_to_ssa ts (llvmprog, tds))
-  
+
 let llvm_opt =
   match (!opt, optimize) with
   | (true, Some optimize) ->
      (verb "Start Optimize";
       optimize ts llvm_ssa)
   | _ -> llvm_ssa
-    
+
 let () = if is_none codegen || !stopllvm || !keepllvm then
            (verb ("Output " ^ (!outputprefix) ^ ".ll");
             let outch = open_out ((!outputprefix) ^ ".ll") in
