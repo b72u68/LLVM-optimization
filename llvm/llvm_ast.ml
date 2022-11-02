@@ -12,7 +12,7 @@ let compare_var (v1: var) (v2: var) =
   | (Global _, Local _) -> 1
 
 let string_of_var = function Local s | Global s -> s
-                   
+
 type label = string
 
 type typ = TInteger of int (* size in bits *)
@@ -44,10 +44,10 @@ type cast = CBitcast
           | CPtrtoint
           | CInttoptr
           | CTrunc
-         
+
 type 'var value_ = Const of int
                 | Var of 'var
-         
+
 type 'var inst_ =
   ILabel of label
 | ISet of 'var * typ * 'var value_
@@ -69,7 +69,7 @@ type 'var inst_ =
 | ILoad of 'var * typ * 'var
 | IStore of typ * 'var value_ * 'var
 | IPhi of 'var * typ * (label * 'var value_) list
-        
+
 type 'var func_ = { f_name   : string;
                   f_ret    : typ;
                   f_args   : (typ * string) list;
@@ -103,7 +103,7 @@ let make_func (name: string) (ty: typ) (args: (typ * string) list)
     f_labels = !labels
   }
 
-              
+
 let rec sizeof ctx t =
   match t with
   | TInteger _ | TPointer _ -> 1

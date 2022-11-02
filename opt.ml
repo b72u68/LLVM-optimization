@@ -138,7 +138,57 @@ let can_inline (f: func) : bool =
 let noop_inst = ISet (new_temp(), TInteger 32, Const 0)
 
 
-let opt_body ts fname body = body
+(*
+ *let cse_gen n =
+ *    match n with
+ *    | IBinop _ | ILoad _ -> cse_kill n (ExpSet.singleton n)
+ *    | _ -> ExpSet.empty
+ *and cse_kill n fs =
+ *    match n with
+ *    | IBinop (a, _, _, _, _) -> ExpSet.filter (fun i -> use_inst i |> (List.mem a)) fs
+ *    | ICmp (a, _, _, _, _) -> ExpSet.filter (fun i -> use_inst i |> (List.mem a)) fs
+ *    | ILoad (a, _, _) -> ExpSet.filter (fun i -> use_inst i |> (List.mem a)) fs
+ *    | _ -> ExpSet.empty
+ *)
+
+module VarMap = Map.Make(String)
+
+let rec propagation (m: value VarMap.t) (il: inst list) : inst list =
+    let find_replace_value (m: value VarMap.t) (vv: value) : value =
+        try
+            match vv with
+            | Var (Local v) -> VarMap.find v m
+            | _ -> vv
+         with Not_found -> vv
+    in
+    match il with
+    | [] -> []
+    | i::t ->
+            match i with
+            | ICast (Local d, cty, ty1, vv, ty2) ->
+                    let vv_rep = find_replace_value m vv in
+                    (ICast (Local d, cty, ty1, vv_rep, ty2))::(propagation (VarMap.add d vv_rep m) t)
+            | ISet (Local d, ty, vv) ->
+                    let vv_rep = find_replace_value m vv in
+                    (ISet (Local d, ty, vv_rep))::(propagation (VarMap.add d vv_rep m) t)
+            | IBinop (d, op, ty, vv1, vv2) ->
+                    let vv1_rep = find_replace_value m vv1 in
+                    let vv2_rep = find_replace_value m vv2 in
+                    (IBinop (d, op, ty, vv1_rep, vv2_rep))::(propagation m t)
+            | ICmp (d, op, ty, vv1, vv2) ->
+                    let vv1_rep = find_replace_value m vv1 in
+                    let vv2_rep = find_replace_value m vv2 in
+                    (ICmp (d, op, ty, vv1_rep, vv2_rep))::(propagation m t)
+            | ICondBr (vv, l1, l2) ->
+                    let s_rep = find_replace_value m vv in
+                    (ICondBr (s_rep, l1, l2))::(propagation m t)
+            | ICall (d, ty, fptr, arglist) ->
+                    let arglist_rep = List.map (fun (ty, vv) -> (ty, find_replace_value m vv)) arglist in
+                    (ICall (d, ty, fptr, arglist_rep))::(propagation m t)
+            | _ -> i::(propagation m t)
+
+
+let opt_body ts fname body = propagation (VarMap.empty) body
 
 let opt_func ts f =
   make_func
