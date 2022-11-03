@@ -140,23 +140,45 @@ let can_inline (f: func) : bool =
 let noop_inst = ISet (new_temp(), TInteger 32, Const 0)
 
 
-(*
- *let cse_gen n =
- *    match n with
- *    | IBinop _ | ILoad _ -> cse_kill n (ExpSet.singleton n)
- *    | _ -> ExpSet.empty
- *and cse_kill n fs =
- *    match n with
- *    | IBinop (a, _, _, _, _) -> ExpSet.filter (fun i -> use_inst i |> (List.mem a)) fs
- *    | ICmp (a, _, _, _, _) -> ExpSet.filter (fun i -> use_inst i |> (List.mem a)) fs
- *    | ILoad (a, _, _) -> ExpSet.filter (fun i -> use_inst i |> (List.mem a)) fs
- *    | _ -> ExpSet.empty
- *)
+(* Common Subexpression Elimination *)
+let cse_gen n =
+    match n with
+    | ISet _
+        | IBinop _
+        | ICmp _
+        | ICast _ -> ExpSet.singleton n
+    | _ -> ExpSet.empty
 
-let string_of_value = function
-    | Var (Local v) -> "%" ^ v
-    | Var (Global v) -> "@" ^ v
-    | Const n -> string_of_int n
+let cse_kill n fs =
+    let defs = def_inst n in
+    if List.length defs = 0 then fs
+    else
+        let a = List.nth defs 0 in
+        ExpSet.filter (fun i -> not (List.mem a (use_inst i))) fs
+
+let cse (fn: string) (body: inst list) : inst list =
+    let ((cfg, entry_node), nodes) = DFG.cfg_of_insts fn body in
+    let (in_fs, out_fs) = ExpDataflow.compute cfg cse_gen cse_kill true true in
+    let rec cse_rec nodes =
+        match nodes with
+        | [] -> []
+        | node::t ->
+                let i = DFG.G.get_data node in
+                match i with
+                | ISet (d, ty, _)
+                    | IBinop (d, _, ty, _, _)
+                    | ICmp (d, _, ty, _, _)
+                    | ICast (d, _, _, _, ty)
+                    | IGetElementPtr (d, ty, _, _)
+                    | ILoad (d, ty, _) ->
+                            let in_set = ExpDataflow.NodeMap.find node in_fs in
+                            let d_rep_opt = get_dest_of_matching_exp i in_set in
+                            (match d_rep_opt with
+                            | Some d_rep -> (ISet (d, ty, Var d_rep))::(cse_rec t)
+                            | None -> i::(cse_rec t))
+                | _ -> i::(cse_rec t)
+    in
+    cse_rec nodes
 
 
 (* Constant/Var Propagation *)
@@ -360,6 +382,7 @@ let opt_body ts fname body =
         let body =
             body
             |> propagation
+            |> cse fname
             |> constant_folding
             |> elim_dead
             |> elim_unreachable

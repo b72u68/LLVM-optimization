@@ -8,7 +8,7 @@ foo__entry:
 define i32 @main() {
 main__entry:
   %r$1 = bitcast i32 0 to i32
-  %i$2 = bitcast i32 0 to i32
+  %i$2 = bitcast i32 %r$1 to i32
   br label %label2
 label2:
   %r$12 = phi i32 [%r$163, %label3], [%r$1, %main__entry]

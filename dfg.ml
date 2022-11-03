@@ -1,11 +1,11 @@
 module L = LLVM.Ast
- 
+
 module Make (I: sig type t end) =
   struct
     module G = Graph.Make(struct type data = I.t L.inst_
                                  let to_string _ = ""
                           end)
-       
+
 type t = G.t * G.node (* graph, entry *)
 let succs = G.succs
 let exists_edge = G.exists_edge

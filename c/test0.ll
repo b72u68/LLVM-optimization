@@ -2,7 +2,7 @@ declare i8* @malloc(i32)
 define i32 @main() {
 main__entry:
   %r$1 = bitcast i32 0 to i32
-  %i$2 = bitcast i32 0 to i32
+  %i$2 = bitcast i32 %r$1 to i32
   br label %label1
 label1:
   %r$12 = phi i32 [%r$163, %label2], [%r$1, %main__entry]
