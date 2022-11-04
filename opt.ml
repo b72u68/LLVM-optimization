@@ -214,9 +214,9 @@ let propagation (il: inst list) : inst list =
                 | ICondBr (vv, l1, l2) ->
                         let s_rep = find_replace_value m vv in
                         (ICondBr (s_rep, l1, l2))::(propagation_rec m t)
-                | ICall (d, ty, fptr, arglist) ->
-                        let arglist_rep = List.map (fun (ty, vv) -> (ty, find_replace_value m vv)) arglist in
-                        (ICall (d, ty, fptr, arglist_rep))::(propagation_rec m t)
+                | ICall (d, ty, fptr, args) ->
+                        let args_rep = List.map (fun (ty, vv) -> (ty, find_replace_value m vv)) args in
+                        (ICall (d, ty, fptr, args_rep))::(propagation_rec m t)
                 | IRet (Some (ty, vv)) ->
                         let vv_rep = find_replace_value m vv in
                         (IRet (Some (ty, vv_rep)))::(propagation_rec m t)
@@ -231,40 +231,34 @@ let bool_of_int (n: int) : bool = n <> 0
 let int_of_bool (b: bool) : int = if b then 1 else 0
 
 let rec constant_folding (il: inst list) : inst list =
-    match il with
-    | [] -> []
-    | i::t ->
-            let i_rep =
-                (match i with
-                | IBinop (d, op, ty, Const n1, Const n2) ->
+    il |> List.map
+        (fun i ->
+            match i with
+            | IBinop (d, op, ty, Const n1, Const n2) ->
+                    let f =
                         (match op with
-                        | BAdd -> ISet (d, ty, Const (n1 + n2))
-                        | BSub -> ISet (d, ty, Const (n1 - n2))
-                        | BMul -> ISet (d, ty, Const (n1 * n2))
-                        | BDiv -> ISet (d, ty, Const (n1 / n2))
-                        | BAnd ->
-                                let b1 = bool_of_int n1 in
-                                let b2 = bool_of_int n2 in
-                                ISet (d, ty, Const (int_of_bool (b1 && b2)))
-                        | BOr ->
-                                let b1 = bool_of_int n1 in
-                                let b2 = bool_of_int n2 in
-                                ISet (d, ty, Const (int_of_bool (b1 || b2)))
-                        | BXor ->
-                                let b1 = bool_of_int n1 in
-                                let b2 = bool_of_int n2 in
-                                ISet (d, ty, Const (int_of_bool (b1 <> b2))))
-                | ICmp (d, op, ty, Const n1, Const n2) ->
+                        | BAdd -> (+)
+                        | BSub -> (-)
+                        | BMul -> ( * )
+                        | BDiv -> (/)
+                        | BAnd -> (land)
+                        | BOr -> (lor)
+                        | BXor -> (lxor))
+                    in
+                    ISet (d, ty, Const (f n1 n2))
+            | ICmp (d, op, ty, Const n1, Const n2) ->
+                    let f =
                         (match op with
-                        | CEq -> ISet (d, ty, Const (int_of_bool (n1 = n2)))
-                        | CNe -> ISet (d, ty, Const (int_of_bool (n1 <> n2)))
-                        | CSGt -> ISet (d, ty, Const (int_of_bool (n1 > n2)))
-                        | CSGe -> ISet (d, ty, Const (int_of_bool (n1 >= n2)))
-                        | CSLt -> ISet (d, ty, Const (int_of_bool (n1 < n2)))
-                        | CSLe -> ISet (d, ty, Const (int_of_bool (n1 <= n2))))
-                | ICondBr (Const n, l1, l2) -> if (bool_of_int n) then IBr l1 else IBr l2
-                | _ -> i)
-            in i_rep::(constant_folding t)
+                        | CEq -> (=)
+                        | CNe -> (<>)
+                        | CSGt -> (>)
+                        | CSGe -> (>=)
+                        | CSLt -> (<)
+                        | CSLe -> (<=))
+                    in
+                    ISet (d, ty, Const (int_of_bool (f n1 n2)))
+            | ICondBr (Const n, l1, l2) -> if (bool_of_int n) then IBr l1 else IBr l2
+            | _ -> i)
 
 
 (* Dead Code Elimination *)
@@ -299,13 +293,13 @@ let rec remove_label_from_phi (il: inst list) (lbl: label) : inst list =
     | [] -> []
     | i::t ->
             match i with
-            | IPhi (d, ty, mergelist) ->
-                    let mergelist = List.remove_assoc lbl mergelist in
-                    if List.length mergelist = 1 then
-                        let (l, vv) = List.nth mergelist 0 in
+            | IPhi (d, ty, preds) ->
+                    let preds = List.remove_assoc lbl preds in
+                    if List.length preds = 1 then
+                        let (l, vv) = List.nth preds 0 in
                         (ISet (d, ty, vv))::(remove_label_from_phi t lbl)
                     else
-                        (IPhi (d, ty, mergelist))::(remove_label_from_phi t lbl)
+                        (IPhi (d, ty, preds))::(remove_label_from_phi t lbl)
             | _ -> i::(remove_label_from_phi t lbl)
 
 let rec remove_label_block (il: inst list) : inst list =
@@ -334,46 +328,12 @@ let elim_unreachable (il: inst list) : inst list =
     (* Skip the label of function body *)
     match il with
     | [] -> []
-    | i::t -> i::(elim_rec t)
+    | (ILabel _ as i)::t -> i::(elim_rec t)
+    | _ -> failwith "Expected ILabel instruction"
 
-(* Merge code block *)
-let rec label_block (il: inst list) (lbl: label) : inst list =
-    let rec collect (il: inst list) =
-        match il with
-        | [] -> []
-        | i::t ->
-                match i with
-                | IBr _ | ICondBr _ | IRet _ -> [i]
-                | _ -> i::(collect t)
-    in
-    match il with
-    | [] -> []
-    | (ILabel l)::t ->
-            if l <> lbl then label_block t lbl
-            else collect t
-    | _::t -> label_block t lbl
 
-let merge_blocks (il: inst list) : inst list =
-    let use = use_labels il in
-    let rec merge_rec (il: inst list) =
-        match il with
-        | [] -> []
-        | i::t ->
-                match i with
-                | IBr l ->
-                        let count_uses = List.fold_left (fun acc lbl -> if l = lbl then acc + 1 else acc) 0 use in
-                        if count_uses = 1 then
-                            (* get code block of the label and move it to the position of IBr *)
-                            let block = label_block il l in
-                            block @ (merge_rec t)
-                        else i::(merge_rec t)
-                | _ -> i::(merge_rec t)
-    in
-    (* Skip the label of function body *)
-    match il with
-    | [] -> []
-    | i::t -> i::(merge_rec t)
 
+(* Function Inlining *)
 
 (* Optimization *)
 let opt_body ts fname body =
@@ -386,7 +346,6 @@ let opt_body ts fname body =
             |> constant_folding
             |> elim_dead
             |> elim_unreachable
-            |> merge_blocks
         in
         if body <> old_body then opt_body_rec body
         else body
