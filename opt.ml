@@ -199,7 +199,10 @@ let propagation (il: inst list) : inst list =
                 match i with
                 | ICast (Local d, cty, ty1, vv, ty2) ->
                         let vv_rep = find_replace_value m vv in
-                        (ICast (Local d, cty, ty1, vv_rep, ty2))::(propagation_rec (VarMap.add d vv_rep m) t)
+                        if types_eq ty1 ty2 then
+                            (ICast (Local d, cty, ty1, vv_rep, ty2))::(propagation_rec (VarMap.add d vv_rep m) t)
+                        else
+                            (ICast (Local d, cty, ty1, vv_rep, ty2))::(propagation_rec m t)
                 | ISet (Local d, ty, vv) ->
                         let vv_rep = find_replace_value m vv in
                         (ISet (Local d, ty, vv_rep))::(propagation_rec (VarMap.add d vv_rep m) t)
@@ -215,8 +218,11 @@ let propagation (il: inst list) : inst list =
                         let s_rep = find_replace_value m vv in
                         (ICondBr (s_rep, l1, l2))::(propagation_rec m t)
                 | ICall (d, ty, fptr, args) ->
+                        let fptr_rep = find_replace_value m (Var fptr) in
                         let args_rep = List.map (fun (ty, vv) -> (ty, find_replace_value m vv)) args in
-                        (ICall (d, ty, fptr, args_rep))::(propagation_rec m t)
+                        (match fptr_rep with
+                        | Var fptrv -> (ICall (d, ty, fptrv, args_rep))::(propagation_rec m t)
+                        | _ -> failwith "Expected a var value for function")
                 | IRet (Some (ty, vv)) ->
                         let vv_rep = find_replace_value m vv in
                         (IRet (Some (ty, vv_rep)))::(propagation_rec m t)
@@ -288,19 +294,23 @@ let rec use_labels (il: inst list) : label list  =
             | ICondBr (_, l1, l2) -> [l1; l2] @ (use_labels t)
             | _ -> use_labels t
 
-let rec remove_label_from_phi (il: inst list) (lbl: label) : inst list =
+let rec replace_label_in_phi (il: inst list) (lbl: label) (nlbl: label option) : inst list =
     match il with
     | [] -> []
     | i::t ->
             match i with
             | IPhi (d, ty, preds) ->
-                    let preds = List.remove_assoc lbl preds in
+                    let preds =
+                        match nlbl with
+                        | Some nl -> List.map (fun (l, vv) -> if l = lbl then (nl, vv) else (l, vv)) preds
+                        | None -> List.remove_assoc lbl preds
+                    in
                     if List.length preds = 1 then
                         let (l, vv) = List.nth preds 0 in
-                        (ISet (d, ty, vv))::(remove_label_from_phi t lbl)
+                        (ISet (d, ty, vv))::(replace_label_in_phi t lbl nlbl)
                     else
-                        (IPhi (d, ty, preds))::(remove_label_from_phi t lbl)
-            | _ -> i::(remove_label_from_phi t lbl)
+                        (IPhi (d, ty, preds))::(replace_label_in_phi t lbl nlbl)
+            | _ -> i::(replace_label_in_phi t lbl nlbl)
 
 let rec remove_label_block (il: inst list) : inst list =
     match il with
@@ -312,28 +322,129 @@ let rec remove_label_block (il: inst list) : inst list =
 
 let elim_unreachable (il: inst list) : inst list =
     let use = use_labels il in
-    let rec elim_rec (il: inst list ) =
-        match il with
-        | [] -> []
+    let rec elim_rec (hd_il: inst list) (tl_il: inst list) =
+        match tl_il with
+        | [] -> hd_il
         | i::t ->
                 match i with
                 | ILabel l ->
                         if not (List.mem l use) then
+                            let h = replace_label_in_phi hd_il l None in
                             let t = remove_label_block t in
-                            let t = remove_label_from_phi t l in
-                            elim_rec t
-                        else i::(elim_rec t)
-                | _ -> i::(elim_rec t)
+                            let t = replace_label_in_phi t l None in
+                            elim_rec h t
+                        else elim_rec (hd_il @ [i]) t
+                | _ -> elim_rec (hd_il @ [i]) t
     in
     (* Skip the label of function body *)
     match il with
     | [] -> []
-    | (ILabel _ as i)::t -> i::(elim_rec t)
+    | (ILabel _ as i)::t -> elim_rec [i] t
     | _ -> failwith "Expected ILabel instruction"
 
 
+(* Merge code block *)
+let rec label_block (il: inst list) (lbl: label) : inst list =
+    let rec collect (il: inst list) =
+        match il with
+        | [] -> []
+        | i::t ->
+                match i with
+                | IBr _ | ICondBr _ | IRet _ -> [i]
+                | _ -> i::(collect t)
+    in
+    match il with
+    | [] -> []
+    | (ILabel l)::t ->
+            if l <> lbl then label_block t lbl
+            else collect t
+    | _::t -> label_block t lbl
+
+let merge_blocks (il: inst list) : inst list =
+    let use = use_labels il in
+    let rec merge_rec (hd_il: inst list) (tl_il: inst list) (curlbl: label) =
+        match tl_il with
+        | [] -> hd_il
+        | i::t ->
+                match i with
+                | ILabel l -> merge_rec (hd_il @ [i]) t l
+                | IBr l ->
+                        let count_uses =
+                            List.fold_left
+                                (fun acc lbl -> if l = lbl then acc + 1 else acc)
+                                0
+                                use
+                        in
+                        if count_uses = 1 then
+                            (* get code block of the label and move it to the position of IBr *)
+                            let block = label_block il l in
+                            (* Replace label in phi function in previous instructions *)
+                            let h = replace_label_in_phi hd_il l (Some curlbl) in
+                            (* Replace label in phi function in next instructions *)
+                            let t = replace_label_in_phi t l (Some curlbl) in
+                            merge_rec (h @ block) t curlbl
+                        else merge_rec (hd_il @ [i]) t curlbl
+                | _ -> merge_rec (hd_il @ [i]) t curlbl
+    in
+    (* Skip the label of function body *)
+    match il with
+    | [] -> []
+    | (ILabel l as i)::t -> merge_rec [i] t l
+    | _ -> failwith "Expected ILabel instruction"
+
 
 (* Function Inlining *)
+let replace_return (dest: var) (il: inst list) =
+    il |> List.map
+        (fun i ->
+            match i with
+            | IRet (Some (ty, vv)) -> ISet (dest, ty, vv)
+            | _ -> i)
+
+let inline_body (prog: func list) (f: func) : func =
+    let rec inline_rec (il: inst list) =
+        match il with
+        | [] -> []
+        | i::t ->
+                match i with
+                | ICall (d, ty, Global fname, args) ->
+                        if fname = f.f_name then i::(inline_rec t)
+                        else
+                            (try
+                                let f_rep = List.find (fun f -> f.f_name = fname) prog in
+                                let argmap = List.combine f_rep.f_args args in
+                                let body_rep =
+                                    List.fold_left
+                                        (fun body ((_, arg), (_, subarg_val)) ->
+                                            sub_body
+                                                (fun vv ->
+                                                    match vv with
+                                                    | Var (Local v) -> if v = arg then subarg_val else vv
+                                                    | _ -> vv)
+                                                body)
+                                        (Array.to_list f_rep.f_body)
+                                        argmap
+                                in
+                                let body_rep_return = replace_return d body_rep in
+                                (* Jump to the first label of the function *)
+                                match body_rep_return with
+                                | [] -> inline_rec t
+                                | (ILabel l)::_ -> [IBr l] @ (body_rep_return) @ (inline_rec t)
+                                | _ -> failwith "Expected ILabel instruction"
+                            with Not_found -> i::(inline_rec t))
+                | _ -> i::(inline_rec t)
+    in
+    {
+        f_name=f.f_name;
+        f_ret=f.f_ret;
+        f_args=f.f_args;
+        f_body=(Array.of_list (inline_rec (Array.to_list f.f_body)));
+        f_labels=f.f_labels
+    }
+
+let function_inline (prog: func list) =
+    List.map (fun f -> inline_body prog f) prog
+
 
 (* Optimization *)
 let opt_body ts fname body =
@@ -346,6 +457,7 @@ let opt_body ts fname body =
             |> constant_folding
             |> elim_dead
             |> elim_unreachable
+            |> merge_blocks
         in
         if body <> old_body then opt_body_rec body
         else body
@@ -359,4 +471,19 @@ let opt_func ts f =
     (opt_body ts f.f_name (Array.to_list f.f_body))
 
 let opt ts prog =
-  List.map (opt_func ts) prog
+    prog
+    |> List.map (opt_func ts)
+    |> function_inline
+    (*
+     *let rec opt_rec prog =
+     *    let old_prog = prog in
+     *    let prog =
+     *        prog
+     *        |> List.map (opt_func ts)
+     *        |> function_inline
+     *    in
+     *    if old_prog <> prog then opt_rec prog
+     *    else prog
+     *in
+     *opt_rec prog
+     *)
