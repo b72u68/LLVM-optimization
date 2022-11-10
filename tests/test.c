@@ -1,4 +1,4 @@
-int cse_test(int a, int b) {
+int test(int a, int b) {
     int result;
     for (int i = 0; i < a; i++) {
         result = result + b;
@@ -12,5 +12,5 @@ int cse_test(int a, int b) {
 int main() {
     int a = 2;
     int b = 3;
-    return cse_test(a, b);
+    return test(a, b);
 }

@@ -422,12 +422,14 @@ let fix_phi (f_args: (typ * string) list) (body: inst list) : inst list =
                                                     else (fst (List.nth pos_predsactual 0), predvar)
                                                 else
                                                     let lbl_rep =
-                                                        fst (List.find
-                                                            (fun predactual ->
-                                                                let defs = List.concat (List.map def_inst (snd predactual)) in
-                                                                let defs_value = List.map (fun def -> Var def) defs in
-                                                                List.mem predvar defs_value)
-                                                            predsactual)
+                                                        try
+                                                            fst (List.find
+                                                                (fun predactual ->
+                                                                    let defs = List.concat (List.map def_inst (snd predactual)) in
+                                                                    let defs_value = List.map (fun def -> Var def) defs in
+                                                                    List.mem predvar defs_value)
+                                                                predsactual)
+                                                        with Not_found -> predlbl
                                                     in (lbl_rep, predvar))
                                     preds
                                 in fix_rec (hd_il @ [IPhi (d, ty, preds)]) t curlblopt
@@ -435,6 +437,27 @@ let fix_phi (f_args: (typ * string) list) (body: inst list) : inst list =
                 | _ -> fix_rec (hd_il @ [i]) t curlblopt
     in
     fix_rec [] body None
+
+let inline_return_inst (body: inst list) (donelbl: label) =
+    let rec inline_rec (il: inst list) (curlbl: label option) (body_rep: inst list) (phi_preds: (label * value) list) =
+        match il with
+        | [] -> (body_rep, phi_preds)
+        | i::t ->
+                match i with
+                | ILabel l -> inline_rec t (Some l) (body_rep @ [i]) phi_preds
+                | IRet (Some (ty, vv)) ->
+                        let d_rep = new_temp () in
+                        (match curlbl with
+                        | Some l ->
+                            inline_rec
+                                t
+                                curlbl
+                                (body_rep @ [ISet (d_rep, ty, vv)] @ [IBr donelbl])
+                                (phi_preds @ [(l, Var d_rep)])
+                        | None -> failwith "Cannot find label of the current block")
+                | _ -> inline_rec t curlbl (body_rep @ [i]) phi_preds
+    in
+    inline_rec body None [] []
 
 let inline_body (prog: func list) (f: func) : inst list =
     let rec inline_rec (body: inst list) =
@@ -460,21 +483,20 @@ let inline_body (prog: func list) (f: func) : inst list =
                                         (Array.to_list f_rep.f_body)
                                         argmap
                                 in
-                                let alpha_body_rep = alpha_conversion body_rep in
+                                let body_rep_alpha = alpha_conversion body_rep in
                                 let done_lbl = new_label () in
                                 (* Replace return instruction to set value to destination *)
-                                let body_rep_return = List.concat
-                                    (List.map
-                                        (fun i ->
-                                            match i with
-                                            | IRet (Some (ty, vv)) -> [ISet (d, ty, vv); IBr done_lbl]
-                                            | _ -> [i])
-                                    alpha_body_rep)
+                                let (body_rep_return, dest_phi_preds) =
+                                    inline_return_inst body_rep_alpha done_lbl
                                 in
                                 match body_rep_return with
                                 | [] -> inline_rec t
                                 | (ILabel l)::_ ->
-                                        [IBr l] @ (body_rep_return) @ [ILabel done_lbl] @ (inline_rec t)
+                                        if List.length dest_phi_preds = 1 then
+                                            let pred = List.nth dest_phi_preds 0 in
+                                            [IBr l] @ (body_rep_return) @ [ILabel done_lbl] @ [ISet (d, ty, snd pred)] @ (inline_rec t)
+                                        else
+                                            [IBr l] @ (body_rep_return) @ [ILabel done_lbl] @ [IPhi (d, ty, dest_phi_preds)] @ (inline_rec t)
                                 | _ -> failwith "Expected ILabel instruction"
                         with Not_found -> i::(inline_rec t))
                 | _ -> i::(inline_rec t)
@@ -502,6 +524,11 @@ let rec use_labels (il: inst list) : label list  =
             | IBr l -> [l] @ (use_labels t)
             | ICondBr (_, l1, l2) -> [l1; l2] @ (use_labels t)
             | _ -> use_labels t
+
+let print_value (vv: value) =
+    match vv with
+    | Var (Local v) | Var (Global v) -> print_endline v
+    | Const n -> print_int n
 
 let rec replace_label_in_phi (il: inst list) (lbl: label) (nlbl: label option) : inst list =
     match il with
@@ -586,7 +613,7 @@ let merge_blocks (il: inst list) : inst list =
                         in
                         if count_uses = 1 then
                             (* get code block of the label and move it to the position of IBr *)
-                            let block = label_block il l in
+                            let block = (label_block hd_il l) @ (label_block tl_il l) in
                             (* Replace label in phi function in previous instructions *)
                             let h = replace_label_in_phi hd_il l (Some curlbl) in
                             (* Replace label in phi function in next instructions *)
@@ -627,6 +654,14 @@ let opt_func ts f =
     (opt_body ts f.f_name (Array.to_list f.f_body))
 
 let opt ts prog =
-    prog
-    |> List.map (opt_func ts)
-    |> function_inline
+    (*let prog = List.map (opt_func ts) prog in*)
+    let rec opt_rec prog =
+        let old_prog = prog in
+        let prog =
+            prog
+            |> List.map (opt_func ts)
+            |> function_inline
+        in
+        if prog <> old_prog then opt_rec prog
+        else prog
+    in opt_rec prog

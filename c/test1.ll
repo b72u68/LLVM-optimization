@@ -48,12 +48,7 @@ label4:
   %z$94 = add i32 %y$91, 1
   %za$97 = add i32 %z$94, 1
   %zb$100 = add i32 %za$97, 1
-  br label %label6
-label6:
   %temp132 = add i32 %zb$100, 1
-  %zc$103 = bitcast i32 %temp132 to i32
-  br label %label7
-label7:
   %temp128$106 = add i32 %a$19, %b$22
   %temp126$108 = add i32 %temp128$106, %c$25
   %temp124$110 = add i32 %temp126$108, %d$28
@@ -81,6 +76,6 @@ label7:
   %temp80$154 = add i32 %temp82$152, %z$94
   %temp78$156 = add i32 %temp80$154, %za$97
   %temp76$158 = add i32 %temp78$156, %zb$100
-  %temp75$160 = add i32 %temp76$158, %zc$103
+  %temp75$160 = add i32 %temp76$158, %temp132
   ret i32 %temp75$160
 }
