@@ -4,6 +4,7 @@
 
 open LLVM.Ast
 open LLVM.Utils
+open LLVM.SSA
 
 module VMap = LLVM.Typecheck.LLVarmap
 
@@ -143,10 +144,14 @@ let noop_inst = ISet (new_temp(), TInteger 32, Const 0)
 (* Common Subexpression Elimination *)
 let cse_gen n =
     match n with
-    | ISet _
-        | IBinop _
-        | ICmp _
-        | ICast _ -> ExpSet.singleton n
+    | ISet (_, ty, _)
+        | IBinop (_, _, ty, _, _)
+        | ICmp (_, _, ty, _, _)
+        | ICast (_, _, _, _, ty)
+        | IPhi (_, ty, _) ->
+                (match ty with
+                | TInteger _ -> ExpSet.singleton n
+                | _ -> ExpSet.empty)
     | _ -> ExpSet.empty
 
 let cse_kill n fs =
@@ -477,6 +482,16 @@ let inline_body (prog: func list) (f: func) : inst list =
     inline_rec (Array.to_list f.f_body)
     |> fix_phi (f.f_args)
 
+let function_inline (prog: func list) =
+    List.map
+        (fun f ->
+            make_func
+                f.f_name
+                f.f_ret
+                f.f_args
+                (inline_body prog f))
+        prog
+
 
 (* Unreachable Code Elimination *)
 let rec use_labels (il: inst list) : label list  =
@@ -585,17 +600,6 @@ let merge_blocks (il: inst list) : inst list =
     | [] -> []
     | (ILabel l as i)::t -> merge_rec [i] t l
     | _ -> failwith "Expected ILabel instruction"
-
-
-let function_inline (prog: func list) =
-    List.map
-        (fun f ->
-            make_func
-                f.f_name
-                f.f_ret
-                f.f_args
-                (inline_body prog f))
-        prog
 
 
 (* Optimization *)
