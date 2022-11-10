@@ -48,8 +48,12 @@ label4:
   %z$94 = add i32 %y$91, 1
   %za$97 = add i32 %z$94, 1
   %zb$100 = add i32 %za$97, 1
-  %temp73$101 = bitcast i32 (i32)* @foo to i32 (i32)*
-  %zc$103 = call i32 %temp73$101(i32 %zb$100)
+  br label %label6
+label6:
+  %temp132 = add i32 %zb$100, 1
+  %zc$103 = bitcast i32 %temp132 to i32
+  br label %label7
+label7:
   %temp128$106 = add i32 %a$19, %b$22
   %temp126$108 = add i32 %temp128$106, %c$25
   %temp124$110 = add i32 %temp126$108, %d$28

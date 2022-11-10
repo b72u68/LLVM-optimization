@@ -22,7 +22,7 @@ module SSet = Set.Make
                 (struct
                   type t = string
                   let compare = String.compare
-                end)         
+                end)
 
 let def_block is = List.concat (List.map Llvm_utils.def_inst is)
 
@@ -96,7 +96,7 @@ let convert_block_to_ssa (ts: L.typ Llvm_typecheck.LLVarmap.t)
   let orig_defsites =
     List.fold_left
       (fun ds n ->
-        List.fold_left 
+        List.fold_left
           (adddefsite n)
           ds
           (def_block (SMap.find (G.get_data n) bbs))
@@ -357,5 +357,5 @@ let unssa_func f =
     f.f_ret
     f.f_args
     (unssa_body (Config.entry_label_of_fun f.f_name) (Array.to_list f.f_body))
-       
+
 let unssa_prog (p, tds) = (List.map unssa_func p, tds)

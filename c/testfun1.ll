@@ -7,7 +7,11 @@ foo__entry:
 
 define i32 @main() {
 main__entry:
-  %temp6$1 = bitcast i32 (i32)* @foo to i32 (i32)*
-  %temp5$3 = call i32 %temp6$1(i32 2)
+  br label %label3
+label3:
+  %temp8 = add i32 2, 1
+  %temp5$3 = bitcast i32 %temp8 to i32
+  br label %label4
+label4:
   ret i32 %temp5$3
 }

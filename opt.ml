@@ -94,7 +94,7 @@ let get_type_of_var (ts: typ LLVM.Typecheck.LLVarmap.t) (v: var) =
 * (e.g. f in "call ty f(args)"), but variable operands will only be replaced
 * if the replacement is also a variable.
 * This is sort of like "map" on LLVM function bodies. *)
-let sub_body (rep_val: value -> value) (body: inst list) : inst list=
+let sub_body (rep_val: value -> value) (body: inst list) : inst list =
   List.map
     (fun i ->
       match i with
@@ -269,7 +269,7 @@ let rec constant_folding (il: inst list) : inst list =
 
 (* Dead Code Elimination *)
 let elim_dead (il: inst list) : inst list =
-    let uses = List.fold_left (fun acc i -> acc @ (use_inst i)) [] il in
+    let uses = List.concat (List.map use_inst il) in
     let rec elim_rec (il: inst list) =
         match il with
         | [] -> []
@@ -282,6 +282,200 @@ let elim_dead (il: inst list) : inst list =
                     else elim_rec t
     in
     elim_rec il
+
+
+(* Function Inlining *)
+let sub_body_label (body: inst list) (target_lbl: label) (new_lbl: label) : inst list =
+    let get_rep_label (l: label) = if l = target_lbl then new_lbl else l in
+    body |> List.map
+        (fun i ->
+            match i with
+            | IBr l -> IBr (get_rep_label l)
+            | ICondBr (vv, l1, l2) -> ICondBr (vv, get_rep_label l1, get_rep_label l2)
+            | IPhi (d, ty, preds) ->
+                    let preds = List.map (fun (l, v) -> (get_rep_label l, v)) preds in
+                    IPhi (d, ty, preds)
+            | _ -> i)
+
+let alpha_conversion (il: inst list) : inst list =
+    let rep_val (target: value) (result: value) (v: value) =
+        if v = target then result else v
+    in
+    let rec alpha_rec (hd_il: inst list) (tl_il: inst list) : inst list =
+        match tl_il with
+        | [] -> hd_il
+        | i::t ->
+                match i with
+                | ISet (d, ty, v) ->
+                        let d_rep = new_temp () in
+                        let h = sub_body (rep_val (Var d) (Var d_rep)) hd_il in
+                        let t = sub_body (rep_val (Var d) (Var d_rep)) t in
+                        alpha_rec (h @ [ISet (d_rep, ty, v)]) t
+                | IBinop (d, b, ty, v1, v2) ->
+                        let d_rep = new_temp () in
+                        let h = sub_body (rep_val (Var d) (Var d_rep)) hd_il in
+                        let t = sub_body (rep_val (Var d) (Var d_rep)) t in
+                        alpha_rec (h @ [IBinop (d_rep, b, ty, v1, v2)]) t
+                | ICmp (d, c, ty, v1, v2) ->
+                        let d_rep = new_temp () in
+                        let h = sub_body (rep_val (Var d) (Var d_rep)) hd_il in
+                        let t = sub_body (rep_val (Var d) (Var d_rep)) t in
+                        alpha_rec (h @ [ICmp (d, c, ty, v1, v2)]) t
+                | ICast (d, ct, ty, v, t2) ->
+                        let d_rep = new_temp () in
+                        let h = sub_body (rep_val (Var d) (Var d_rep)) hd_il in
+                        let t = sub_body (rep_val (Var d) (Var d_rep)) t in
+                        alpha_rec (h @ [ICast (d, ct, ty, v, t2)]) t
+                | ICall (d, ty, fn, args) ->
+                        let d_rep = new_temp () in
+                        let h = sub_body (rep_val (Var d) (Var d_rep)) hd_il in
+                        let t = sub_body (rep_val (Var d) (Var d_rep)) t in
+                        alpha_rec (h @ [ICall (d_rep, ty, fn, args)]) t
+                | IGetElementPtr (d, ty, v, indices) ->
+                        let d_rep = new_temp () in
+                        let h = sub_body (rep_val (Var d) (Var d_rep)) hd_il in
+                        let t = sub_body (rep_val (Var d) (Var d_rep)) t in
+                        alpha_rec (h @ [IGetElementPtr (d_rep, ty, v, indices)]) t
+                | ILoad (d, ty, v) ->
+                        let d_rep = new_temp () in
+                        let h = sub_body (rep_val (Var d) (Var d_rep)) hd_il in
+                        let t = sub_body (rep_val (Var d) (Var d_rep)) t in
+                        alpha_rec (h @ [ILoad (d_rep, ty, v)]) t
+                | IAlloca (d, ty, n) ->
+                        let d_rep = new_temp () in
+                        let h = sub_body (rep_val (Var d) (Var d_rep)) hd_il in
+                        let t = sub_body (rep_val (Var d) (Var d_rep)) t in
+                        alpha_rec (h @ [IAlloca (d_rep, ty, n)]) t
+                | IPhi (d, ty, preds) ->
+                        let d_rep = new_temp () in
+                        let h = sub_body (rep_val (Var d) (Var d_rep)) hd_il in
+                        let t = sub_body (rep_val (Var d) (Var d_rep)) t in
+                        alpha_rec (h @ [IPhi (d_rep, ty, preds)]) t
+                | ILabel l ->
+                        let l_rep = new_label () in
+                        let h = sub_body_label hd_il l l_rep in
+                        let t = sub_body_label t l l_rep in
+                        alpha_rec (h @ [ILabel l_rep]) t
+                | _ -> alpha_rec (hd_il @ [i]) t
+    in
+    alpha_rec [] il
+
+let analyze_block (il: inst list) : (label list) * (inst list) =
+    let rec anal_rec (il: inst list) (body: inst list ) =
+        match il with
+        | [] -> ([], [])
+        | i::t ->
+                match i with
+                | IBr l -> ([l], body @ [i])
+                | ICondBr (_, l1, l2) -> ([l1; l2], body @ [i])
+                | IRet _ -> ([], body @ [i])
+                | _ -> anal_rec t (body @ [i])
+    in
+    anal_rec il []
+
+let rec get_preds (il: inst list) (succlabel: label) =
+    match il with
+    | [] -> []
+    | i::t ->
+            match i with
+            | ILabel l ->
+                    let (succlabels, labelblock) = analyze_block t in
+                    if List.mem succlabel succlabels then (l, labelblock)::(get_preds t succlabel)
+                    else get_preds t succlabel
+            | _ -> get_preds t succlabel
+
+let fix_phi (f_args: (typ * string) list) (body: inst list) : inst list =
+    let args = List.map (fun (_, v) -> Var (Local v)) f_args in
+    let rec fix_rec (hd_il: inst list) (tl_il: inst list) (curlblopt: label option) =
+        match tl_il with
+        | [] -> hd_il
+        | i::t ->
+                match i with
+                | ILabel l -> fix_rec (hd_il @ [i]) t (Some l)
+                | IPhi (d, ty, preds) ->
+                        (match curlblopt with
+                        | Some curlbl ->
+                                let hd_preds = get_preds hd_il curlbl in
+                                let tl_preds = get_preds t curlbl in
+                                let predsactual = hd_preds @ tl_preds in
+                                let predsactual_lbls = List.map fst predsactual in
+                                let preds =
+                                    List.map
+                                        (fun (predlbl, predvar) ->
+                                            if List.mem predlbl predsactual_lbls then (predlbl, predvar)
+                                            else
+                                                if List.mem predvar args then
+                                                    let pos_predsactual =
+                                                        List.filter
+                                                            (fun predactual ->
+                                                                let defs = List.concat (List.map def_inst (snd predactual)) in
+                                                                let defs_value = List.map (fun def -> Var def) defs in
+                                                                not (List.exists (fun pred -> List.mem (snd pred) defs_value) preds))
+                                                        predsactual
+                                                    in
+                                                    if List.length pos_predsactual <> 1 then failwith "Expected 1 possible label to replace in phi function"
+                                                    else (fst (List.nth pos_predsactual 0), predvar)
+                                                else
+                                                    let lbl_rep =
+                                                        fst (List.find
+                                                            (fun predactual ->
+                                                                let defs = List.concat (List.map def_inst (snd predactual)) in
+                                                                let defs_value = List.map (fun def -> Var def) defs in
+                                                                List.mem predvar defs_value)
+                                                            predsactual)
+                                                    in (lbl_rep, predvar))
+                                    preds
+                                in fix_rec (hd_il @ [IPhi (d, ty, preds)]) t curlblopt
+                        | None -> failwith "Cannot find label of the current block")
+                | _ -> fix_rec (hd_il @ [i]) t curlblopt
+    in
+    fix_rec [] body None
+
+let inline_body (prog: func list) (f: func) : inst list =
+    let rec inline_rec (body: inst list) =
+        match body with
+        | [] -> []
+        | i::t ->
+                match i with
+                | ICall (d, ty, Global fname, args) ->
+                        (try
+                            let f_rep = List.find (fun f -> f.f_name = fname) prog in
+                            if not (can_inline f_rep) then i::(inline_rec t)
+                            else
+                                let argmap = List.combine f_rep.f_args args in
+                                let body_rep =
+                                    List.fold_left
+                                        (fun body ((_, arg), (_, subarg_val)) ->
+                                            sub_body
+                                                (fun vv ->
+                                                    match vv with
+                                                    | Var (Local v) -> if v = arg then subarg_val else vv
+                                                    | _ -> vv)
+                                                body)
+                                        (Array.to_list f_rep.f_body)
+                                        argmap
+                                in
+                                let alpha_body_rep = alpha_conversion body_rep in
+                                let done_lbl = new_label () in
+                                (* Replace return instruction to set value to destination *)
+                                let body_rep_return = List.concat
+                                    (List.map
+                                        (fun i ->
+                                            match i with
+                                            | IRet (Some (ty, vv)) -> [ISet (d, ty, vv); IBr done_lbl]
+                                            | _ -> [i])
+                                    alpha_body_rep)
+                                in
+                                match body_rep_return with
+                                | [] -> inline_rec t
+                                | (ILabel l)::_ ->
+                                        [IBr l] @ (body_rep_return) @ [ILabel done_lbl] @ (inline_rec t)
+                                | _ -> failwith "Expected ILabel instruction"
+                        with Not_found -> i::(inline_rec t))
+                | _ -> i::(inline_rec t)
+    in
+    inline_rec (Array.to_list f.f_body)
+    |> fix_phi (f.f_args)
 
 
 (* Unreachable Code Elimination *)
@@ -393,57 +587,15 @@ let merge_blocks (il: inst list) : inst list =
     | _ -> failwith "Expected ILabel instruction"
 
 
-(* Function Inlining *)
-let replace_return (dest: var) (il: inst list) =
-    il |> List.map
-        (fun i ->
-            match i with
-            | IRet (Some (ty, vv)) -> ISet (dest, ty, vv)
-            | _ -> i)
-
-let inline_body (prog: func list) (f: func) : func =
-    let rec inline_rec (il: inst list) =
-        match il with
-        | [] -> []
-        | i::t ->
-                match i with
-                | ICall (d, ty, Global fname, args) ->
-                        if fname = f.f_name then i::(inline_rec t)
-                        else
-                            (try
-                                let f_rep = List.find (fun f -> f.f_name = fname) prog in
-                                let argmap = List.combine f_rep.f_args args in
-                                let body_rep =
-                                    List.fold_left
-                                        (fun body ((_, arg), (_, subarg_val)) ->
-                                            sub_body
-                                                (fun vv ->
-                                                    match vv with
-                                                    | Var (Local v) -> if v = arg then subarg_val else vv
-                                                    | _ -> vv)
-                                                body)
-                                        (Array.to_list f_rep.f_body)
-                                        argmap
-                                in
-                                let body_rep_return = replace_return d body_rep in
-                                (* Jump to the first label of the function *)
-                                match body_rep_return with
-                                | [] -> inline_rec t
-                                | (ILabel l)::_ -> [IBr l] @ (body_rep_return) @ (inline_rec t)
-                                | _ -> failwith "Expected ILabel instruction"
-                            with Not_found -> i::(inline_rec t))
-                | _ -> i::(inline_rec t)
-    in
-    {
-        f_name=f.f_name;
-        f_ret=f.f_ret;
-        f_args=f.f_args;
-        f_body=(Array.of_list (inline_rec (Array.to_list f.f_body)));
-        f_labels=f.f_labels
-    }
-
 let function_inline (prog: func list) =
-    List.map (fun f -> inline_body prog f) prog
+    List.map
+        (fun f ->
+            make_func
+                f.f_name
+                f.f_ret
+                f.f_args
+                (inline_body prog f))
+        prog
 
 
 (* Optimization *)
@@ -474,16 +626,3 @@ let opt ts prog =
     prog
     |> List.map (opt_func ts)
     |> function_inline
-    (*
-     *let rec opt_rec prog =
-     *    let old_prog = prog in
-     *    let prog =
-     *        prog
-     *        |> List.map (opt_func ts)
-     *        |> function_inline
-     *    in
-     *    if old_prog <> prog then opt_rec prog
-     *    else prog
-     *in
-     *opt_rec prog
-     *)
