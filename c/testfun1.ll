@@ -7,5 +7,9 @@ foo__entry:
 
 define i32 @main() {
 main__entry:
+  br label %label3
+label3:
+  br label %label4
+label4:
   ret i32 3
 }

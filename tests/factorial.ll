@@ -6,6 +6,8 @@ factorial__entry:
 label1:
   ret i32 %n
 label2:
+  br label %label3
+label3:
   %temp10$8 = sub i32 %n, 1
   %temp8$9 = call i32 @factorial(i32 %temp10$8)
   %temp6$10 = mul i32 %n, %temp8$9

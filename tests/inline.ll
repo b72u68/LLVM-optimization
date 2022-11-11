@@ -7,5 +7,13 @@ square__entry:
 
 define i32 @main() {
 main__entry:
+  br label %label3
+label3:
+  br label %label4
+label4:
+  br label %label5
+label5:
+  br label %label6
+label6:
   ret i32 20
 }
