@@ -1,10 +1,9 @@
 int test(int a, int b) {
     int result;
-    for (int i = 0; i < a; i++) {
-        result = result + b;
-        if (i > b / 2) {
-            break;
-        }
+    if (a + b > 4) {
+        result = 1;
+    } else {
+        result = 2;
     }
     return result;
 }

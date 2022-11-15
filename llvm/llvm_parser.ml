@@ -3116,7 +3116,7 @@ and _menhir_goto_brackops : _menhir_env -> 'ttv_tail -> _menhir_state -> (
 # 3117 "llvm_parser.ml"
         ) = 
 # 171 "llvm_parser.mly"
-    ( IPhi (d, t, preds) )
+    ( should_be_ssa := true; IPhi (d, t, preds) )
 # 3121 "llvm_parser.ml"
          in
         _menhir_goto_inst _menhir_env _menhir_stack _menhir_s _v) : 'freshtv296)) : 'freshtv298)

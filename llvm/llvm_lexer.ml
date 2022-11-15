@@ -38,7 +38,7 @@ let _ = List.iter (fun (kwd, tok) -> Hashtbl.add keywords kwd tok)
       ]
 
 let structs : Llvm_ast.typ list Varmap.t ref = ref Varmap.empty
-
+let should_be_ssa = ref false
 
 # 44 "llvm_lexer.ml"
 let __ocaml_lex_tables = {

@@ -7,13 +7,8 @@ square__entry:
 
 define i32 @main() {
 main__entry:
-  br label %label3
-label3:
-  br label %label4
-label4:
-  br label %label5
-label5:
-  br label %label6
-label6:
-  ret i32 20
+  %b$4 = call i32 @square(i32 2)
+  %c$7 = call i32 @square(i32 %b$4)
+  %temp9$10 = add i32 %b$4, %c$7
+  ret i32 %temp9$10
 }
