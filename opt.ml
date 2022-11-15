@@ -242,34 +242,54 @@ let bool_of_int (n: int) : bool = n <> 0
 
 let int_of_bool (b: bool) : int = if b then 1 else 0
 
+let f_of_binop = function
+    | BAdd -> (+)
+    | BSub -> (-)
+    | BMul -> ( * )
+    | BDiv -> (/)
+    | BAnd -> (land)
+    | BOr -> (lor)
+    | BXor -> (lxor)
+
+let f_of_cmp = function
+    | CEq -> (=)
+    | CNe -> (<>)
+    | CSGt -> (>)
+    | CSGe -> (>=)
+    | CSLt -> (<)
+    | CSLe -> (<=)
+
 let rec constant_folding (il: inst list) : inst list =
     il |> List.map
         (fun i ->
             match i with
+            | IBinop (d, BMul, ty, Const n, Var v)
+                | IBinop (d, BMul, ty, Var v, Const n) ->
+                    if n = 1 then ISet (d, ty, Var v)
+                    else i
+            | IBinop (d, BAdd, ty, Const n, Var v)
+                | IBinop (d, BAdd, ty, Var v, Const n)
+                | IBinop (d, BSub, ty, Var v, Const n) ->
+                        if n = 0 then ISet (d, ty, Var v)
+                        else i
+            | IBinop (d, BAnd, ty, Const n, Var v) ->
+                    if bool_of_int n then ISet (d, ty, Var v)
+                    else ISet (d, ty, Const 0)
+            | IBinop (d, BAnd, ty, Var v, Const n) ->
+                    if bool_of_int n then ISet (d, ty, Var v)
+                    else i
+            | IBinop (d, BOr, ty, Const n, Var v) ->
+                    if not (bool_of_int n) then ISet (d, ty, Var v)
+                    else ISet (d, ty, Const 1)
+            | IBinop (d, BOr, ty, Var v, Const n) ->
+                    if not (bool_of_int n) then ISet (d, ty, Var v)
+                    else i
             | IBinop (d, op, ty, Const n1, Const n2) ->
-                    let f =
-                        (match op with
-                        | BAdd -> (+)
-                        | BSub -> (-)
-                        | BMul -> ( * )
-                        | BDiv ->
-                                if n2 = 0 then failwith "Division_by_zero"
-                                else (/)
-                        | BAnd -> (land)
-                        | BOr -> (lor)
-                        | BXor -> (lxor))
-                    in
-                    ISet (d, ty, Const (f n1 n2))
+                    let f = f_of_binop op in
+                    if op = BDiv && n2 = 0 then failwith "Division_by_zero"
+                    else ISet (d, ty, Const (f n1 n2))
             | ICmp (d, op, ty, Const n1, Const n2) ->
-                    let f =
-                        (match op with
-                        | CEq -> (=)
-                        | CNe -> (<>)
-                        | CSGt -> (>)
-                        | CSGe -> (>=)
-                        | CSLt -> (<)
-                        | CSLe -> (<=))
-                    in
+                    let f = f_of_cmp op in
                     ISet (d, ty, Const (int_of_bool (f n1 n2)))
             | ICondBr (Const n, l1, l2) -> if (bool_of_int n) then IBr l1 else IBr l2
             | _ -> i)
@@ -289,10 +309,7 @@ let elim_dead (il: inst list) : inst list =
                         | ICmp (d, _, ty, _, _)
                         | ICast (d, _, _, _, ty)
                         | ILoad (d, ty, _)
-                        | IPhi (d, ty, _) ->
-                                (match ty with
-                                | TInteger _ -> [d]
-                                | _ -> [])
+                        | IPhi (d, ty, _) -> [d]
                     | _ -> []
                 in
                 if List.length defs = 0 then i::(elim_rec t)
