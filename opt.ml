@@ -436,9 +436,9 @@ let opt_body ts fname body =
         let old_body = body in
         let body =
             body
+            |> constant_folding
             |> propagation
             |> cse fname
-            |> constant_folding
             |> elim_dead
             |> elim_unreachable
             |> merge_blocks
