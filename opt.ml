@@ -439,6 +439,8 @@ let opt_body ts fname body =
             |> propagation
             |> cse fname
             |> elim_dead
+            |> elim_unreachable
+            |> merge_blocks
         in
         if body <> old_body then opt_body_rec body
         else body
