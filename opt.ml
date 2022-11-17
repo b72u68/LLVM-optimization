@@ -127,6 +127,7 @@ let sub_body (rep_val: value -> value) (body: inst list) : inst list =
                                       | _ -> v))
       | IPhi (d, t, preds) ->
          IPhi (d, t, List.map (fun (l, v) -> (l, rep_val v)) preds)
+      | ICondBr (v, l1, l2) -> ICondBr (rep_val v, l1, l2)
       | _ -> i
     )
     body
@@ -148,7 +149,6 @@ let cse_gen n =
         | IBinop (_, _, ty, _, _)
         | ICmp (_, _, ty, _, _)
         | ICast (_, _, _, _, ty)
-        | ILoad (_, ty, _)
         | IPhi (_, ty, _) ->
                 (match ty with
                 | TInteger _ -> ExpSet.singleton n
@@ -175,7 +175,6 @@ let cse (fn: string) (body: inst list) : inst list =
                     | IBinop (d, _, ty, _, _)
                     | ICmp (d, _, ty, _, _)
                     | ICast (d, _, _, _, ty)
-                    | ILoad (d, ty, _)
                     | IPhi (d, ty, _) ->
                             let in_set = ExpDataflow.NodeMap.find node in_fs in
                             let d_rep_opt = get_dest_of_matching_exp i in_set in
@@ -440,8 +439,6 @@ let opt_body ts fname body =
             |> propagation
             |> cse fname
             |> elim_dead
-            |> elim_unreachable
-            |> merge_blocks
         in
         if body <> old_body then opt_body_rec body
         else body
